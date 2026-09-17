@@ -68,7 +68,10 @@ Two conclusions drive the design:
 - **Never modify the backend skills.** Read them, call their scripts, change nothing.
   If one needs different behaviour, express it in the query string, not in their code.
 - **Always use each backend's own wrapper script.** Never hand-roll `curl` against
-  these APIs — the wrappers own the rate limiting.
+  these APIs — the wrappers own the rate limiting. The sole exception is Stage 3
+  steps 1–2 (publisher PDF hosts, Unpaywall), which no wrapper can reach; those two
+  calls are bounded by the rules in Stage 3. Every other step, full-text XML included,
+  goes through a wrapper.
 - **Work in a scratch directory**, never scattered across the workspace. Use
   `./tmp_litsearch/` inside the current directory, or a path the user names.
   🔴 Name the paths and confirm before creating them.
@@ -102,8 +105,10 @@ Decide which of these the user actually wants. They change which backends run:
 | **Entity-centric** ("what genes does this paper implicate") | PubMed `find_linked_biological_data` | Unique to PubMed. |
 
 Also fix, before running anything: the topic terms, any date window, language,
-and whether the user wants preprints, published papers, or both. State the plan
-back in one line before executing.
+whether the user wants preprints, published papers, or both, **the delivery
+directory**, and **a contact email for Unpaywall** (ask for one if the user has not
+given any — stage 3 needs it and must never invent one). State the plan back in one
+line before executing.
 
 ### Stage 1 — Run the sweeps
 
@@ -158,21 +163,58 @@ OA flag.
 `--input` is repeatable, so a backend can be passed more than once — but pass the
 enriched file, not the same backend's raw PMID list alongside it.
 
-### Stage 3 — Full text
+### Stage 3 — Full text and PDF retrieval
 
-Only open-access papers are retrievable. Try, in order:
+Only open-access papers are retrievable. **The obvious path is broken — do not start
+there.** All four rows below were measured on 2026-09-17:
 
-1. **Europe PMC** `get_fulltext <PMCID>` (plain text) or `download_pdf <PMCID>`.
-   Get the PMCID first with a `DOI:` search.
-2. **PubMed** `get_full_text_pmc <PMID>` — PMC Open Access Subset only. Exits 1 and
-   writes no file when the paper is not in that subset, so check the exit status.
+| Attempt | Result |
+|---|---|
+| `europepmc.org/articles/<PMCID>?pdf=render` (what `download_pdf` calls) | **HTTP 403** — Cloudflare "Just a moment…" JS challenge |
+| `oa.fcgi?id=<PMCID>` (NCBI OA Web Service) | **HTTP 404** — service retired |
+| `pmc.ncbi.nlm.nih.gov/articles/<PMCID>/pdf/` | returns ~20 KB of HTML, not a PDF |
+| publisher OA direct link (BMC/Springer, Nature family) | ✅ works |
 
-Verify every downloaded file: PDFs must start with `%PDF-` and be non-trivial in
-size. Exit code 0 does not prove you got a paper.
+The 403 message blames an empty User-Agent and tells you to set
+`POLITE_HTTP_USER_AGENT`. **That hint is wrong** — a real browser UA still 403s.
 
-**A paper with no OA copy is a normal outcome**, not an error — report it as
-"requires subscription / interlibrary loan" and move on. Never present an abstract
-as if it were the full text.
+**Fallback chain — work down it, stop at the first file that passes verification:**
+
+| # | Step | How | If it fails |
+|---|---|---|---|
+| 1 | Publisher OA direct link | `https://<publisher>/…/<doi>.pdf`; verified working for BMC/Springer (`…/counter/pdf/<doi>.pdf`) and Nature (`nature.com/articles/<id>.pdf`) | → 2 |
+| 2 | Unpaywall | `https://api.unpaywall.org/v2/<doi>?email=<contact>` → `best_oa_location.url_for_pdf`, then every `oa_locations[]` entry | → 3 |
+| 3 | PubMed PMC Open Access Subset | `uv run scripts/pubmed_api.py <fresh-out.json> get_full_text_pmc <PMID>` — BioC JSON full text, **not** a PDF. Exits 1 without writing a file both when the paper is outside the subset *and* for unrelated causes (output path already exists, unknown function, missing argument). **Only a body reading `[Error] : No result can be found.` is paywall evidence**; any other error body means fix-and-retry, not 需订阅. Always pass a fresh output path | → 4 |
+| 4 | Europe PMC plain text | `get_fulltext <PMCID>` — note this is *not* `download_pdf` | → 5 |
+| 5 | Europe PMC JATS XML | `get_fulltext <PMCID> --format xml` — the *same wrapper* as step 4, different format; it hits the same EBI REST endpoint, so never hand-roll that URL. Complete readable full text, but **not** the typeset PDF; save as `.fulltext.xml` and record status `已下载全文（非 PDF）` | → 6 |
+| 6 | Give up on this paper | record status `未下载`, reason into `未下载文献说明.txt` | — |
+
+**The raw-HTTP steps are 1 and 2 only** — publisher PDF hosts, and Unpaywall. No
+wrapper reaches either, which is the exception carved out in **Core rules**. Keep them
+minimal and polite: one request per URL,
+`User-Agent: biology-literature-search/1.0 (contact: <the user's email>)`, no retry
+loop. A single Unpaywall re-try means: on HTTP 422, retry once with a different
+`email=`, then drop to step 3. Use the email collected at Stage 0 — **never invent
+one**: 422 means missing or malformed, but a well-formed fake domain is accepted
+silently, so a made-up address fails invisibly rather than loudly. Steps 3–5 all go
+through wrappers.
+
+**Verify every file, by each step's own test — not by exit code.** Exit code 0 does
+not prove you got a paper: a 20 KB HTML interstitial writes to disk just as happily as
+a real PDF. A file that fails its test is **deleted, not kept**: steps 1–2 must start
+with `%PDF-`; step 3 must parse as BioC JSON; steps 4–5 must be non-empty and **not**
+an HTML error page — their real first bytes are `# ` for plain text and `<?xml` for
+JATS, so a rule demanding `<` or a letter would discard the wrapper's own good output.
+The chain ends only by stopping at the first step that passes, or by reaching step 6.
+
+**A paper with no OA copy is a normal outcome**, not an error — record it as
+需订阅 / 馆际互借 in `selection.json` and in `未下载文献说明.txt`, then move on.
+Never present an abstract as if it were the full text, and never swap in a different
+paper for the one the user asked for.
+
+If `download_pdf` or `get_fulltext` hangs with no output, that is an orphaned
+backend process holding the rate-limit lock, not a slow API — see the
+troubleshooting section in `references/backends.md`.
 
 ### Stage 4 — Expand (only if the user asked to be thorough)
 
@@ -181,17 +223,91 @@ as if it were the full text.
   `fetch_database_summary`. Note: these links lag publication by weeks to months,
   so expect `[]` for recent papers.
 
-### Stage 5 — Report
+### Stage 5 — Deliverables
 
-Structure the output as:
+The run is not finished until **three files exist on disk**. Terminal prose is a
+summary, never the deliverable.
 
-1. Attribution: which backends ran, with each backend's required source listing.
-2. Coverage actually achieved: backends used, date windows, filters, and anything
-   **not** searched.
-3. The merged list. For each paper: title, year, journal, DOI link, **and its access
-   status** (`OA` / `subscription` / `preprint`).
-4. Explicitly flag: preprints (not peer-reviewed), retracted works, and any paper
-   that only one backend returned.
+All three go in the scratch directory fixed under **Core rules** above — the
+default `./tmp_litsearch/` in the current working directory, or the path the user
+named when you stated the plan at Stage 0. Name that path in your Stage 0 plan line
+so "the delivery directory" is never ambiguous later.
+
+**5.1 — Assemble `selection.json`**
+
+Write the curated list as JSON — **only** the papers you are recommending, in the
+order the user should read them. This is a curated subset of `merged.json`, not a
+copy of it; the full set goes into sheet 2 of the workbook at 5.3.
+
+The inclusion criterion, in priority order — state which one you used in the
+terminal summary:
+
+1. **The user named a count** ("find me 5 papers") — that count is the list size.
+2. **The user named a type** ("3 reviews", "methods papers") — filter `merged.json`
+   to that type first, then rank.
+3. **Neither** — default to **5** papers, ranked by the sort you passed at Stage 1
+   (Europe PMC `--sort "CITED desc"`; PubMed `--sort_by relevance` — pass one
+   explicitly, Stage 1 does not imply it), capped at 25. State which sort you used.
+
+Never pad the list to reach a count, and never silently drop a paper the user asked
+for by name. The JSON has exactly these fields:
+
+```json
+{
+  "topic": "…", "search_date": "YYYY-MM-DD", "backends": "…",
+  "items": [
+    {"order": "①", "title": "…", "journal": "…", "doi": "10.xxxx/yyy",
+     "year": "2021", "status": "未下载", "local_file": "", "note": "…"}
+  ]
+}
+```
+
+`status` is exactly one of `已下载 PDF` / `已下载全文（非 PDF）` / `未下载`.
+`local_file` is a bare filename in the delivery directory, or `""`. Name downloads
+`NN_<slug>.pdf` / `.txt` / `.fulltext.xml`, where `NN` is the `order` value — the
+folder then encodes the reading order.
+Do not invent additional status strings — `build_report.py` asserts the three
+buckets partition the list.
+
+**5.2 — Download every item**
+
+Work down the fallback chain in **Stage 3 — Full text and PDF retrieval** above.
+Record per item whether you got a PDF, got full text in another format, or got
+nothing — that outcome is what sets each `status` field at 5.1.
+
+**5.3 — Build `文献清单.xlsx`**
+
+```bash
+uv run scripts/build_report.py --selection <dir>/selection.json \
+  --merged <dir>/merged.json --out <dir>/文献清单.xlsx \
+  --emit-missing <dir>/未下载文献说明.txt
+```
+
+- Sheet `推荐文献` — 序号 / 文章名 / 期刊名 / 地址 / 年份 / 获取状态 / 本地文件 / 备注
+- Sheet `全部检索结果` — 文章名 / 期刊名 / 地址 / 年份 / 来源后端 / 开放获取 / PMID
+
+`地址` is always the full `https://doi.org/<doi>` link, never a bare DOI string.
+
+**5.4 — Fill in `未下载文献说明.txt`**
+
+The `--emit-missing` flag at 5.3 already wrote the skeleton: one block per item whose
+status is not `已下载 PDF`, each with 文章名 / 期刊名 / 地址 / 年份 / **原因** /
+**复核证据** / 获取途径, plus a section for technical blocks. **Your job is to replace
+every 【填写】 placeholder with what actually happened** — the exit code or HTTP status
+you really observed, not a plausible one. Never ship the skeleton with placeholders
+still in it; a placeholder that survives to the user reads as a fabricated reason.
+
+Then a separate section listing every technical block you hit, with the exact URL and
+observed failure, so the next run does not re-diagnose the same thing. A paper behind
+a paywall is reported as **需订阅 / 馆际互借**, never silently dropped and never
+replaced by a different paper without the user asking.
+
+**5.5 — Terminal summary**
+
+Then, and only then, print in chat: attribution (which backends ran, with each
+backend's required source listing), coverage actually achieved (backends, date
+windows, filters, and anything **not** searched), and explicit flags for preprints
+(not peer-reviewed), retracted works, and any paper only one backend returned.
 
 ## Europe PMC OA policy — a deliberate deviation
 
@@ -287,7 +403,8 @@ building this skill, and they cost real time to diagnose.
 │   ├── biology-query-cookbook.md   # how to build the query (species, categories, linknames)
 │   └── coverage.md                 # measured coverage, what each backend misses
 └── scripts/
-    └── merge_results.py            # cross-backend de-duplication
+    ├── merge_results.py            # cross-backend de-duplication (Stage 2)
+    └── build_report.py             # 文献清单.xlsx — the two-sheet workbook (Stage 5.3)
 ```
 
 `SKILL.md` is the operative document — an agent reads that. `README.md` is for
