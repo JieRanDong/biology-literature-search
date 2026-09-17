@@ -9,8 +9,13 @@ The scope is **biology as a whole**, not just biomedicine: ecology, evolution,
 zoology, plant science, microbiology, marine biology, genomics, taxonomy and the
 molecular sciences all fall inside it.
 
-You ask in prose. You get back three files on disk — a curated reading list, an
-Excel workbook, and an honest account of what could not be retrieved.
+You ask in prose. You get back a clean folder on disk — the papers themselves, one Excel
+workbook, and nothing else. Every scratch file that produced them is filed away in
+`_work/`, and any paper that could not be retrieved is recorded honestly in the workbook's
+own columns rather than in a companion notes file.
+
+This skill answers *which papers exist*, not *which order to read them in* — it ranks by
+relevance and citation count, and will say so rather than invent a curriculum.
 
 ---
 
@@ -69,20 +74,31 @@ That is the problem this skill exists to solve.
 
 ## What you get
 
-The run is not finished until three files exist on disk. Terminal prose is a
+The run is not finished until the deliverable exists on disk. Terminal prose is a
 summary, never the deliverable.
 
-| File | What it is |
+**The finished folder is exactly this** — nothing else:
+
+```
+<dir>/
+├── 文献清单.xlsx          # the deliverable
+├── _paper/                # the downloaded papers
+└── _work/                 # everything that produced them
+```
+
+| Item | What it is |
 |---|---|
-| `selection.json` | The curated reading list — only the papers being recommended, in the order to read them. Machine-readable; drives the workbook. |
 | `文献清单.xlsx` | The deliverable. **Sheet 1 `推荐文献`** — 序号 / 文章名 / 期刊名 / 地址 / 年份 / 获取状态 / 本地文件 / 备注, with clickable DOI links colour-coded by retrieval status. **Sheet 2 `全部检索结果`** — every de-duplicated record from all three backends, filterable. |
-| `未下载文献说明.txt` | Per-paper reasons for anything not obtained as a PDF, plus a log of the technical blocks hit — so the next run does not re-diagnose the same wall. |
+| `_paper/NN_<slug>.pdf` / `.txt` / `.fulltext.xml` | The downloaded papers. `NN` is the reading-order number, so the folder itself encodes the reading order. |
+| `_work/` | `selection.json`, `merged.json` and the raw per-backend JSON. Nothing is deleted — `build_report.py` can be re-run from here. |
 
-Downloaded papers are saved as `NN_<slug>.pdf` / `.txt` / `.fulltext.xml`, where `NN`
-is the reading-order number — the folder itself encodes the reading order.
+A paper behind a paywall is reported as **需订阅 / 馆际互借** in the 获取状态 column. It is
+never silently dropped, never passed off as read, and never swapped for a different paper.
 
-A paper behind a paywall is reported as **需订阅 / 馆际互借**. It is never silently
-dropped, never passed off as read, and never swapped for a different paper.
+> **Two documents earlier versions of this skill produced are deliberately gone**: a
+> `未下载文献说明.txt` and a `学习顺序说明.md`. Retrieval status lives in the workbook's
+> 获取状态 / 本地文件 / 备注 columns instead, and the skill answers *which papers exist*
+> rather than *which order to read them in*.
 
 ---
 
@@ -121,9 +137,10 @@ question, runs them, merges what comes back, then goes and gets the PDFs.
                  └──────────┬───────────┘
                             ▼
                  ┌──────────────────────┐
-                 │  Stage 5   build     │  selection.json
-                 │  build_report.py     │  文献清单.xlsx
-                 └──────────────────────┘  未下载文献说明.txt
+                 │  Stage 5   build     │  文献清单.xlsx
+                 │  build_report.py     │  _paper/  ← downloaded papers
+                 │  finalize_delivery.py│  _work/   ← scratch
+                 └──────────────────────┘
 ```
 
 **It never copies or patches the backend skills.** All three are invoked in place by
@@ -139,7 +156,7 @@ thing changed about Europe PMC's behaviour is the *query string* (see
 | Requirement | Notes |
 |---|---|
 | [Claude Code](https://claude.com/claude-code) | the host application |
-| [`uv`](https://docs.astral.sh/uv/) on `PATH` | both bundled scripts are PEP-723; `build_report.py` pulls in `openpyxl` automatically, nothing to install by hand |
+| [`uv`](https://docs.astral.sh/uv/) on `PATH` | all three bundled scripts are PEP-723; `build_report.py` pulls in `openpyxl` automatically, nothing to install by hand |
 | Three backend skills | **not bundled in this repository** — see [Installation](#installation) |
 | **A contact email** | for Unpaywall (Stage 3 step 2). The skill will ask you for one; it will not invent a plausible-looking address, because Unpaywall accepts a well-formed fake silently and fails invisibly |
 | `NCBI_API_KEY` *(optional)* | raises PubMed's rate limit from 3 to 10 req/s; put it in `~/.env` |
@@ -198,13 +215,15 @@ A typical run hands back a folder like:
 
 ```
 tmp_litsearch/
-├── selection.json
 ├── 文献清单.xlsx
-├── 未下载文献说明.txt
-├── merged.json
-├── 01_publisher-oa-link.pdf
-├── 02_unpaywall.pdf
-└── 03_pmc-fulltext.fulltext.xml
+├── _paper/
+│   ├── 01_publisher-oa-link.pdf
+│   ├── 02_unpaywall.pdf
+│   └── 03_pmc-fulltext.fulltext.xml
+└── _work/
+    ├── selection.json
+    ├── merged.json
+    └── …                  # raw per-backend JSON
 ```
 
 The trigger is deliberately broad: broad biology surveys, "find papers on \<organism
@@ -221,7 +240,7 @@ or topic\>", systematic searches, and citation chasing.
 | **2 — Merge** | `scripts/merge_results.py` normalises the three different result schemas, collapses duplicates, and annotates access status. |
 | **3 — Full text** | A six-step fallback chain: publisher OA link → Unpaywall → PubMed `get_full_text_pmc` → Europe PMC `get_fulltext` → EBI REST JATS XML → give up and record why. Every file is verified by magic bytes, not by exit code. |
 | **4 — Expand** *(optional)* | Europe PMC citation graph; PubMed cross-links to Gene / Protein / Nucleotide / PubChem / SRA records. |
-| **5 — Deliverables** | Assemble `selection.json`, download every item, build `文献清单.xlsx` via `scripts/build_report.py`, and fill in every placeholder in `未下载文献说明.txt` with what actually happened. |
+| **5 — Deliverables** | Assemble `selection.json`, download every item into `_paper/`, build `文献清单.xlsx` via `scripts/build_report.py`, then run `scripts/finalize_delivery.py` — which files the papers into `_paper/`, sweeps the scratch into `_work/`, and verifies every promised file is really on disk. |
 
 The skill carries hard checkpoints: it must confirm before bulk retrieval, before
 reporting zero results as a finding, and before quoting a citation count as a fact.
@@ -263,7 +282,7 @@ test:
 | 3 | PubMed PMC Open Access Subset — `get_full_text_pmc`, BioC JSON, **not** a PDF | parses as BioC JSON |
 | 4 | Europe PMC `get_fulltext <PMCID>` — plain text | non-empty, not an HTML error page |
 | 5 | Europe PMC `get_fulltext <PMCID> --format xml` — JATS XML, complete readable full text but not a typeset PDF | non-empty, starts `<?xml` |
-| 6 | Give up on this paper | record the reason into `未下载文献说明.txt` |
+| 6 | Give up on this paper | record `status: 未下载` and the reason in that item's `note` |
 
 Three details that matter more than they look:
 
@@ -325,18 +344,18 @@ shape — the merge prints a warning to stderr rather than quietly omitting it.
 
 `build_report.py` asserts that the record statuses partition the list across exactly
 three buckets (`已下载 PDF` / `已下载全文（非 PDF）` / `未下载`) and exits on a typo'd
-status, so a paper cannot silently vanish from the counts. The
-`未下载文献说明.txt` skeleton it emits is deliberately full of `【填写】`
-placeholders; leaving one in place reads to the user as a fabricated reason, so the
-skill is required to replace every one with the exit code or HTTP status actually
-observed.
+status, so a paper cannot silently vanish from the counts. `finalize_delivery.py` adds
+the complementary guarantee: it **exits 1** if any `local_file` in `selection.json`
+does not resolve to a real file, so a `已下载` claim always has a paper behind it.
+Together these mean the workbook cannot overstate what was retrieved — which matters
+more now that there is no companion notes file to cross-check it against.
 
 ---
 
 ## Repository layout
 
 ```
-SKILL.md                           412 lines   the operative document; an agent reads this
+SKILL.md                           481 lines   the operative document; an agent reads this
 README.md                                      this file — for humans, not read during a search
 references/
   backends.md                      248 lines   exact CLI invocation per backend, plus troubleshooting
@@ -344,7 +363,8 @@ references/
   coverage.md                       86 lines   measured coverage and what each backend misses
 scripts/
   merge_results.py                 357 lines   cross-backend de-duplication and access annotation (stdlib only)
-  build_report.py                  233 lines   文献清单.xlsx builder (PEP-723: openpyxl)
+  build_report.py                  188 lines   文献清单.xlsx builder (PEP-723: openpyxl)
+  finalize_delivery.py             141 lines   file papers into _paper/, scratch into _work/, verify promises (stdlib only)
 ```
 
 ---
@@ -404,6 +424,12 @@ Everything claimed above was run, not assumed:
 - Query syntaxes in the cookbook measured against live APIs — including the finding
   that PubMed's undocumented `[Organism]` tag works (67,990 hits for *Danio rerio*)
   while Europe PMC's `ORGANISM:` field does not (151 hits).
+- The delivery pipeline run end-to-end on fixtures: `build_report.py` produced a
+  workbook with both sheets and the expected bucket counts, and `finalize_delivery.py`
+  sorted a flat directory into exactly `文献清单.xlsx` + `_paper/` + `_work/` with
+  nothing left loose and nothing deleted. The integrity check was exercised in both
+  directions — exit 0 when every `local_file` resolves, **exit 1** listing the offender
+  when one does not.
 
 This skill has also been through several rounds of automated adversarial
 optimisation (`darwin-skill`) — seven optimisation passes in total, each judged blind

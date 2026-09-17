@@ -75,6 +75,21 @@ Two conclusions drive the design:
 - **Work in a scratch directory**, never scattered across the workspace. Use
   `./tmp_litsearch/` inside the current directory, or a path the user names.
   🔴 Name the paths and confirm before creating them.
+- **The delivery directory ends clean.** When the run finishes it is exactly:
+
+      <dir>/文献清单.xlsx      the deliverable
+      <dir>/_paper/            the downloaded papers
+      <dir>/_work/             everything that produced them
+
+  Stage 5.4 sorts the flat working directory into that shape — papers into `_paper/`,
+  scratch (`merged.json`, `selection.json`, the raw per-backend JSON) into `_work/`.
+  Files are **moved, never deleted**. Never leave loose JSON at the top level, and
+  never skip 5.4 because the run "looks done".
+- **Two documents are deliberately NOT produced**: a `未下载文献说明.txt` and a
+  `学习顺序说明.md`. Do not write them and do not offer them as extras — earlier
+  versions of this skill emitted both, so an outdated README or habit may suggest
+  otherwise. Retrieval status lives in the workbook's 获取状态 / 本地文件 / 备注
+  columns; there is no companion notes file.
 - **Run each backend call in the background and let it finish.** Never wrap one in
   a short foreground timeout. The wrapper is a parent process; killing it leaves an
   orphaned child holding that backend's cross-process rate-limit lock, and every
@@ -109,6 +124,16 @@ whether the user wants preprints, published papers, or both, **the delivery
 directory**, and **a contact email for Unpaywall** (ask for one if the user has not
 given any — stage 3 needs it and must never invent one). State the plan back in one
 line before executing.
+
+**This skill answers "which papers exist", not "which order to read them in".** If the
+user asks for a learning order, say plainly that this skill ranks by relevance and
+citation count rather than by pedagogical sequence, hand over the ranked list, and stop
+there — do not write a reading-order document or reshape the list into a curriculum. See
+**Core rules**.
+
+The delivery directory is a flat scratch space *during* the run. Stage 5.4 sorts it
+into its final shape, so the `文献清单.xlsx` + `_paper/` + `_work/` layout below is the
+expected end state, not a surprise.
 
 ### Stage 1 — Run the sweeps
 
@@ -187,7 +212,7 @@ The 403 message blames an empty User-Agent and tells you to set
 | 3 | PubMed PMC Open Access Subset | `uv run scripts/pubmed_api.py <fresh-out.json> get_full_text_pmc <PMID>` — BioC JSON full text, **not** a PDF. Exits 1 without writing a file both when the paper is outside the subset *and* for unrelated causes (output path already exists, unknown function, missing argument). **Only a body reading `[Error] : No result can be found.` is paywall evidence**; any other error body means fix-and-retry, not 需订阅. Always pass a fresh output path | → 4 |
 | 4 | Europe PMC plain text | `get_fulltext <PMCID>` — note this is *not* `download_pdf` | → 5 |
 | 5 | Europe PMC JATS XML | `get_fulltext <PMCID> --format xml` — the *same wrapper* as step 4, different format; it hits the same EBI REST endpoint, so never hand-roll that URL. Complete readable full text, but **not** the typeset PDF; save as `.fulltext.xml` and record status `已下载全文（非 PDF）` | → 6 |
-| 6 | Give up on this paper | record status `未下载`, reason into `未下载文献说明.txt` | — |
+| 6 | Give up on this paper | record status `未下载` in `selection.json`, with the reason in that item's `note` | — |
 
 **The raw-HTTP steps are 1 and 2 only** — publisher PDF hosts, and Unpaywall. No
 wrapper reaches either, which is the exception carved out in **Core rules**. Keep them
@@ -208,9 +233,11 @@ JATS, so a rule demanding `<` or a letter would discard the wrapper's own good o
 The chain ends only by stopping at the first step that passes, or by reaching step 6.
 
 **A paper with no OA copy is a normal outcome**, not an error — record it as
-需订阅 / 馆际互借 in `selection.json` and in `未下载文献说明.txt`, then move on.
-Never present an abstract as if it were the full text, and never swap in a different
-paper for the one the user asked for.
+需订阅 / 馆际互借 in `selection.json` (`status: 未下载`, reason in `note`), then move
+on. Never present an abstract as if it were the full text, and never swap in a
+different paper for the one the user asked for. The workbook's 获取状态 column is the
+only place a retrieval failure survives, so fill it in honestly for every item —
+including the ones you did not manage to fetch.
 
 If `download_pdf` or `get_fulltext` hangs with no output, that is an orphaned
 backend process holding the rate-limit lock, not a slow API — see the
@@ -225,13 +252,29 @@ troubleshooting section in `references/backends.md`.
 
 ### Stage 5 — Deliverables
 
-The run is not finished until **three files exist on disk**. Terminal prose is a
+The run is not finished until the deliverables exist **on disk**. Terminal prose is a
 summary, never the deliverable.
 
-All three go in the scratch directory fixed under **Core rules** above — the
-default `./tmp_litsearch/` in the current working directory, or the path the user
-named when you stated the plan at Stage 0. Name that path in your Stage 0 plan line
-so "the delivery directory" is never ambiguous later.
+Everything is assembled in the delivery directory fixed under **Core rules** above —
+the default `./tmp_litsearch/` in the current working directory, or the path the user
+named when you stated the plan at Stage 0. Name that path in your Stage 0 plan line so
+"the delivery directory" is never ambiguous later.
+
+During the run that directory is flat — papers, workbook and scratch files all side by
+side. That is expected. **Stage 5.4 sorts it into its final shape**, which is exactly:
+
+```
+<dir>/
+├── 文献清单.xlsx                # the deliverable
+├── _paper/                      # the downloaded papers, named so the
+│   ├── NN_<slug>.pdf            #   folder encodes the reading order
+│   ├── NN_<slug>.txt
+│   └── NN_<slug>.fulltext.xml
+└── _work/                       # everything that produced the above
+```
+
+A directory left flat, or full of loose scratch JSON, does not match this spec. Do not
+stop at 5.3 and call the run done.
 
 **5.1 — Assemble `selection.json`**
 
@@ -263,15 +306,21 @@ for by name. The JSON has exactly these fields:
 ```
 
 `status` is exactly one of `已下载 PDF` / `已下载全文（非 PDF）` / `未下载`.
-`local_file` is a bare filename in the delivery directory, or `""`. Name downloads
-`NN_<slug>.pdf` / `.txt` / `.fulltext.xml`, where `NN` is the `order` value — the
-folder then encodes the reading order.
+`local_file` is the paper's path **relative to the delivery directory** —
+`_paper/NN_<slug>.pdf` / `.txt` / `.fulltext.xml`, where `NN` is the `order` value, so
+`_paper/` encodes the reading order. Use `""` when nothing was retrieved. It is printed
+verbatim into the workbook's 本地文件 column, so it must be a path the user can actually
+follow from the delivery directory.
 Do not invent additional status strings — `build_report.py` asserts the three
 buckets partition the list.
 
-**5.2 — Download every item**
+**5.2 — Download every item into `_paper/`**
 
-Work down the fallback chain in **Stage 3 — Full text and PDF retrieval** above.
+Work down the fallback chain in **Stage 3 — Full text and PDF retrieval** above. Write
+every download straight into `<dir>/_paper/` — Stage 5.4's integrity check verifies each
+`local_file` resolves, so a paper left loose at the top level fails that check rather
+than being silently filed.
+
 Record per item whether you got a PDF, got full text in another format, or got
 nothing — that outcome is what sets each `status` field at 5.1.
 
@@ -279,8 +328,7 @@ nothing — that outcome is what sets each `status` field at 5.1.
 
 ```bash
 uv run scripts/build_report.py --selection <dir>/selection.json \
-  --merged <dir>/merged.json --out <dir>/文献清单.xlsx \
-  --emit-missing <dir>/未下载文献说明.txt
+  --merged <dir>/merged.json --out <dir>/文献清单.xlsx
 ```
 
 - Sheet `推荐文献` — 序号 / 文章名 / 期刊名 / 地址 / 年份 / 获取状态 / 本地文件 / 备注
@@ -288,19 +336,34 @@ uv run scripts/build_report.py --selection <dir>/selection.json \
 
 `地址` is always the full `https://doi.org/<doi>` link, never a bare DOI string.
 
-**5.4 — Fill in `未下载文献说明.txt`**
+**The workbook is the only delivery surface.** There is no companion notes file, so
+everything the user needs must fit in these columns:
 
-The `--emit-missing` flag at 5.3 already wrote the skeleton: one block per item whose
-status is not `已下载 PDF`, each with 文章名 / 期刊名 / 地址 / 年份 / **原因** /
-**复核证据** / 获取途径, plus a section for technical blocks. **Your job is to replace
-every 【填写】 placeholder with what actually happened** — the exit code or HTTP status
-you really observed, not a plausible one. Never ship the skeleton with placeholders
-still in it; a placeholder that survives to the user reads as a fabricated reason.
+- `备注` — why this paper is in the list at all, in one line;
+- `获取状态` — `已下载 PDF` / `已下载全文（非 PDF）` / `未下载`, colour-coded;
+- `本地文件` — the `_paper/…` path, or `—` when nothing was retrieved.
 
-Then a separate section listing every technical block you hit, with the exact URL and
-observed failure, so the next run does not re-diagnose the same thing. A paper behind
-a paywall is reported as **需订阅 / 馆际互借**, never silently dropped and never
-replaced by a different paper without the user asking.
+A `未下载` row is not a failure to hide — it is the honest record that the paper exists
+and could not be retrieved. Never drop such a row to make the sheet look complete, and
+never record a `已下载` status you have not actually verified: Stage 3's per-step file
+tests are the only thing that makes that status true.
+
+**5.4 — Finalize the delivery directory**
+
+```bash
+uv run scripts/finalize_delivery.py --dir <dir>
+```
+
+This sorts the flat working directory into its final shape — downloaded papers into
+`<dir>/_paper/`, every intermediate artifact (`merged.json`, `selection.json`, the raw
+per-backend JSON, any quarantined query results) into `<dir>/_work/` — leaving only
+`文献清单.xlsx` at the top level. **Nothing is deleted**; `build_report.py` can still be
+re-run from `_work/`.
+
+The script enforces an integrity check: every `local_file` named in `selection.json`
+must resolve to a real file. It **exits 1 and lists** any that do not. A paper marked
+`已下载` whose file is absent is a fabricated status, not a cosmetic problem — fix
+`selection.json` (or the missing download) and re-run. Do not ship past it.
 
 **5.5 — Terminal summary**
 
@@ -308,6 +371,11 @@ Then, and only then, print in chat: attribution (which backends ran, with each
 backend's required source listing), coverage actually achieved (backends, date
 windows, filters, and anything **not** searched), and explicit flags for preprints
 (not peer-reviewed), retracted works, and any paper only one backend returned.
+
+Name the delivery directory and state its final shape, so the user can tell from the
+summary alone that the run ended clean rather than mid-flight. If any item is `未下载`,
+say which and why — the workbook records it, but a reader who never opens the sheet
+should still not be left thinking the list was fully retrieved.
 
 ## Europe PMC OA policy — a deliberate deviation
 
@@ -404,7 +472,8 @@ building this skill, and they cost real time to diagnose.
 │   └── coverage.md                 # measured coverage, what each backend misses
 └── scripts/
     ├── merge_results.py            # cross-backend de-duplication (Stage 2)
-    └── build_report.py             # 文献清单.xlsx — the two-sheet workbook (Stage 5.3)
+    ├── build_report.py             # 文献清单.xlsx — the two-sheet workbook (Stage 5.3)
+    └── finalize_delivery.py        # papers → _paper/, scratch → _work/ (Stage 5.4)
 ```
 
 `SKILL.md` is the operative document — an agent reads that. `README.md` is for

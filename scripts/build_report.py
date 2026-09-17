@@ -20,6 +20,10 @@ Usage:
 Payload fields consumed:
   selection.json  {topic, search_date, backends, items[{order,title,journal,doi,
                    year,status,local_file,note}]}
+                  `local_file` is the path of the paper relative to the delivery
+                  directory, i.e. `_paper/NN_<slug>.pdf` (Stage 5.2), or "" when
+                  nothing was retrieved. It is printed verbatim into the 本地文件
+                  column, so it must be a path the user can actually follow.
   merged.json     produced by merge_results.py — records[] with doi, pmid, pmcid,
                   title, year, journal, url, access, oa_status, found_in, cited_by
 """
@@ -150,55 +154,12 @@ def sheet_all(wb, records):
     return ws
 
 
-def emit_missing(sel, path):
-    """Write the 未下载文献说明.txt skeleton. Returns the item count."""
-    L = ["未下载文献说明", "=" * 64,
-         f"检索日期：{sel.get('search_date', '')}",
-         f"后　　端：{sel.get('backends', '')}",
-         f"主　　题：{sel.get('topic', '')}",
-         "", "一、逐条原因", "-" * 64]
-    n = 0
-    for it in sel.get("items", []):
-        if it.get("status") == STATUS_PDF:
-            continue
-        n += 1
-        if it.get("status") == STATUS_MISS:
-            reason = "【填写】为何没拿到 PDF —— 无开放获取版本 / 不在 PMC OA 子集 / 出版社拒绝"
-            route = "【填写】需订阅 / 馆际互借"
-        else:
-            reason = "【填写】已获全文但非排版 PDF —— 写出是哪一步的回退（如出版社端点 403）"
-            route = "【填写】已取得全文，无需其他途径"
-        L += [f"[序号 {it.get('order', '')}]  {it.get('status', '')}",
-              f"  文章名：{it.get('title', '')}",
-              f"  期刊名：{it.get('journal', '')}",
-              f"  地　址：{doi_url(it.get('doi'))}",
-              f"  年　份：{it.get('year', '')}　　{it.get('note', '')}",
-              f"  原　因：{reason}",
-              "  复核证据：【填写】你实际观测到的 exit code 或 HTTP 状态码，"
-              "例如 get_full_text_pmc 返回 exit=1 / 端点 HTTP 403",
-              f"  获取途径：{route}",
-              ""]
-    if not n:
-        L.append("（无 —— 全部条目均为已下载 PDF）")
-    L += ["", "二、技术拦截记录", "-" * 64,
-          "每次实际撞到的拦截写一条，带 URL 与观测到的失败；下一条不要重复诊断同一件事。",
-          "",
-          "【填写】例：europepmc.org/articles/<PMCID>?pdf=render → HTTP 403，"
-          "响应体为 Cloudflare 挑战页（换真实 UA 仍 403）",
-          ""]
-    Path(path).write_text("\n".join(L), encoding="utf-8")
-    return n
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--selection", required=True, help="selection.json from Stage 5.1")
     ap.add_argument("--merged", required=True, help="merged.json from merge_results.py")
     ap.add_argument("--out", required=True, help="output .xlsx path")
-    ap.add_argument("--emit-missing", metavar="PATH",
-                    help="also write the 未下载文献说明.txt skeleton to PATH "
-                         "(Stage 5.4); every non-PDF item gets its required fields stubbed")
     a = ap.parse_args()
 
     sel = json.loads(Path(a.selection).read_text(encoding="utf-8"))
@@ -221,12 +182,6 @@ def main():
     print(f"  推荐文献: {len(items)} 行 "
           f"(PDF {n_pdf} / 全文非PDF {n_text} / 未下载 {n_miss})")
     print(f"  全部检索结果: {len(records)} 行")
-    if a.emit_missing:
-        n_stub = emit_missing(sel, a.emit_missing)
-        print(f"wrote {a.emit_missing} (未下载文献说明.txt skeleton, {n_stub} 条待填)")
-    elif n_miss or n_text:
-        print(f"  未下载 {n_miss} 篇 / 非 PDF {n_text} 篇 — "
-              f"加 --emit-missing <path> 生成说明 txt 骨架")
 
 
 if __name__ == "__main__":
