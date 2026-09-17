@@ -244,13 +244,14 @@ silently dropped.
 
 | Attempt | Result |
 |---|---|
-| `europepmc.org/articles/<PMCID>?pdf=render` — what the upstream `download_pdf` calls | **HTTP 403**, Cloudflare "Just a moment…" JS challenge |
+| `europepmc.org/articles/<PMCID>?pdf=render` — what the upstream `download_pdf` calls | **HTTP 403**, and the body is the Cloudflare `Just a moment...` JS challenge |
 | `oa.fcgi?id=<PMCID>` — NCBI OA Web Service | **HTTP 404**, service retired |
-| `pmc.ncbi.nlm.nih.gov/articles/<PMCID>/pdf/` | returns ~20 KB of HTML, not a PDF |
+| `pmc.ncbi.nlm.nih.gov/articles/<PMCID>/pdf/` | **HTTP 301** to a filename-specific URL, which then returns **HTTP 200 with ~1.8 KB of HTML** — a `Preparing to download ...` interstitial, not a PDF. Also slow enough to time out at 25 s |
 | publisher OA direct link (BMC/Springer, Nature family) | ✅ works |
 
 The 403 page blames an empty User-Agent and tells you to set `POLITE_HTTP_USER_AGENT`.
-**That hint is wrong** — a real browser UA still gets 403.
+**That hint is wrong** — these results were reproduced with a real browser User-Agent,
+so the UA is not the cause.
 
 So the skill works down a chain and stops at the first file that passes *its own*
 test:
@@ -395,8 +396,11 @@ Everything claimed above was run, not assumed:
   records, correct `access` classification (`OA 4 / subscription 1 / preprint 1 /
   unknown 4`), PMID-only records collapsing into their DOI-bearing counterparts and
   inheriting their titles.
-- All four full-text paths measured, three of them failing — the basis for the
-  fallback chain rather than a hopeful `download_pdf` call.
+- The failing download paths reproduced independently with a real browser
+  User-Agent: `?pdf=render` → HTTP 403 with a Cloudflare challenge body; `oa.fcgi`
+  → HTTP 404; PMC `/pdf/` → HTTP 301, then 200 with an HTML `Preparing to
+  download ...` interstitial. That is the basis for the fallback chain, rather than
+  a hopeful `download_pdf` call.
 - Query syntaxes in the cookbook measured against live APIs — including the finding
   that PubMed's undocumented `[Organism]` tag works (67,990 hits for *Danio rerio*)
   while Europe PMC's `ORGANISM:` field does not (151 hits).
