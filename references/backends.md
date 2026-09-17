@@ -22,7 +22,7 @@ first. Set `PYTHONUTF8=1` on Windows to avoid encoding failures on non-ASCII out
 ## PubMed — MEDLINE coverage and cross-database links
 
 Skill: `~/.claude/skills/pubmed-database/`
-Run from: `C:/Users/djr21/.claude/skills/pubmed-database`
+Run from: `~/.claude/skills/pubmed-database`
 
 ```bash
 cd ~/.claude/skills/pubmed-database
@@ -91,7 +91,7 @@ The CLI refuses to overwrite an existing output file — on retry, use a **new**
 ## Europe PMC — full text, PDF and the citation graph
 
 Skill: `~/.claude/skills/literature-search-europepmc/`
-Run from: `C:/Users/djr21/.claude/skills/literature-search-europepmc`
+Run from: `~/.claude/skills/literature-search-europepmc`
 
 ```bash
 cd ~/.claude/skills/literature-search-europepmc
@@ -146,7 +146,7 @@ literature is absent.
 ## bioRxiv / medRxiv — fresh preprints only
 
 Skill: `~/.claude/skills/literature-search-biorxiv/`
-Run from: `C:/Users/djr21/.claude/skills/literature-search-biorxiv`
+Run from: `~/.claude/skills/literature-search-biorxiv`
 
 ```bash
 cd ~/.claude/skills/literature-search-biorxiv

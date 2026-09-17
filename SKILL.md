@@ -279,9 +279,9 @@ building this skill, and they cost real time to diagnose.
 ## Directory layout
 
 ```
-~/.agents/skills/biology-literature-search/     # real source (git-managed)
-~/.claude/skills/biology-literature-search      # junction to the above
+~/.claude/skills/biology-literature-search/
 ├── SKILL.md
+├── README.md                       # human-facing overview, not read during a search
 ├── references/
 │   ├── backends.md                 # verified invocation recipes per backend
 │   ├── biology-query-cookbook.md   # how to build the query (species, categories, linknames)
@@ -289,3 +289,7 @@ building this skill, and they cost real time to diagnose.
 └── scripts/
     └── merge_results.py            # cross-backend de-duplication
 ```
+
+`SKILL.md` is the operative document — an agent reads that. `README.md` is for
+humans browsing the repository. On this machine the directory is a junction into
+`~/.agents/skills/`, but nothing in the skill depends on that arrangement.
